@@ -19,13 +19,16 @@ import androidx.core.content.ContextCompat
 import com.google.zxing.BinaryBitmap
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.DecodeHintType
+import com.google.zxing.LuminanceSource
 import com.google.zxing.MultiFormatReader
 import com.google.zxing.PlanarYUVLuminanceSource
+import com.google.zxing.common.GlobalHistogramBinarizer
 import com.google.zxing.common.HybridBinarizer
 import java.util.EnumMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
@@ -99,8 +102,13 @@ class QrScannerActivity : Activity(), SurfaceHolder.Callback, Camera.PreviewCall
             params.previewFormat = ImageFormat.NV21
             val supportedSizes = params.supportedPreviewSizes.orEmpty()
             val selected = supportedSizes
-                .filter { it.width >= 640 && it.height >= 480 }
-                .minByOrNull { it.width * it.height }
+                // 640x480 在手机上看起来够用，但电脑二维码包含地址、指纹和配对码，
+                // 模块很密时取景框里的有效像素不够；优先选接近 1280x720 的预览。
+                .filter { it.width >= 960 && it.height >= 720 }
+                .minByOrNull { abs(it.width * it.height - 1280 * 720) }
+                ?: supportedSizes
+                    .filter { it.width >= 640 && it.height >= 480 }
+                    .minByOrNull { it.width * it.height }
                 ?: supportedSizes.firstOrNull()
             if (selected != null) {
                 params.setPreviewSize(selected.width, selected.height)
@@ -132,6 +140,10 @@ class QrScannerActivity : Activity(), SurfaceHolder.Callback, Camera.PreviewCall
                 opened.setPreviewCallbackWithBuffer(this)
             }
             opened.startPreview()
+            if (focusMode == Camera.Parameters.FOCUS_MODE_AUTO) {
+                // AUTO 模式不会自行触发对焦；部分旧设备没有连续对焦模式，必须主动对焦一次。
+                runCatching { opened.autoFocus { _, _ -> } }
+            }
         } catch (_: Exception) {
             releaseCamera()
             setResult(RESULT_CANCELED)
@@ -183,15 +195,29 @@ class QrScannerActivity : Activity(), SurfaceHolder.Callback, Camera.PreviewCall
             rotated90.rotateCounterClockwise(),
             rotated90.rotateCounterClockwise().rotateCounterClockwise()
         )
+
+        // 电脑端二维码通常位于画面中央；先尝试中心区域可以降低背景文字、反光和边缘噪声的影响。
+        val cropped = variants.mapNotNull { variant ->
+            if (variant.width < 640 || variant.height < 480) null
+            else variant.crop(variant.width / 10, variant.height / 10, variant.width * 4 / 5, variant.height * 4 / 5)
+        }
         for (variant in variants) {
-            try {
-                return MultiFormatReader().run { setHints(hints); decodeWithState(BinaryBitmap(HybridBinarizer(variant))).text }
-            } catch (_: Exception) {
-                // 取景框还没对准时继续等下一帧。
-            }
+            decodeWith(variant, useGlobal = false)?.let { return it }
+        }
+        for (variant in cropped) {
+            decodeWith(variant, useGlobal = false)?.let { return it }
+        }
+        // 光线不均时 HybridBinarizer 可能整帧失败，最后用全局直方图再试一次。
+        for (variant in variants + cropped) {
+            decodeWith(variant, useGlobal = true)?.let { return it }
         }
         return null
     }
+
+    private fun decodeWith(source: LuminanceSource, useGlobal: Boolean): String? = runCatching {
+        val binarizer = if (useGlobal) GlobalHistogramBinarizer(source) else HybridBinarizer(source)
+        MultiFormatReader().run { setHints(hints); decodeWithState(BinaryBitmap(binarizer)).text }
+    }.getOrNull()
 
     private fun finishWith(value: String) {
         if (finished) return

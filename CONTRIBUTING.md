@@ -41,16 +41,21 @@ cd desktop
 npm install          # 首次
 npm run dev          # 开发模式（热更新）
 npm run typecheck    # 类型检查
-npm test             # 类型检查 + 构建 + 167 项端到端测试（会短暂弹出应用窗口）
+npm test             # 类型检查 + 构建 + focused API contract test
+npm run test:smoke   # 完整端到端回归（会短暂弹出应用窗口，按需手动运行）
 npm run dist:nsis    # 打 Windows 安装版到 desktop/release/
 ```
 
 Windows 上 PowerShell 默认禁止运行 `npm.ps1`，请用 `npm.cmd`。
 
-**提交前请保证 `npm test` 全绿（167/167）。** 测试会启动真实 Electron 并通过 CDP 驱动界面，
-所以改动界面/交互时它能真正验证到。
+### 电脑端启动诊断
 
-新增功能时请一并补测试 —— 测试段落写在 `desktop/scripts/smoke.mjs`。
+桌面端启动后会在当前相册仓库的 `runtime/logs/startup.log` 写入脱敏诊断日志，记录数据目录选择来源、仓库是否存在、Hub 启动结果和未处理异常。日志不记录 Hub 令牌、私钥、证书内容、请求正文或完整本机路径；提交 Issue 前请先检查并删除任何不应公开的本机信息。旧安装包不包含这项日志功能，需要更新到包含该改动的版本后再复现。
+
+**提交前请保证 `npm test` 全绿。** 默认测试运行类型检查、生产构建和 focused API contract，
+不会启动完整相册 smoke。需要验证界面/交互时，再按需运行 `npm run test:smoke`。
+
+新增 API 或协议功能时请一并补 focused contract test；界面/媒体回归场景再写入 `desktop/scripts/smoke.mjs`。
 注意里面有几条**写测试的坑**（虚拟滚动只渲染视口内元素、界面刷新是限流的、
 必须等「内容对不对」而不是「格子数够不够」），照现有段落的写法来。
 

@@ -33,7 +33,7 @@ export default function PairingCard({ status }: PairingCardProps): JSX.Element {
         alive = false
       }
     }
-    void QRCode.toDataURL(pairingLink, { width: 240, margin: 2, errorCorrectionLevel: 'M' })
+    void QRCode.toDataURL(pairingLink, { width: 260, margin: 2, errorCorrectionLevel: 'M' })
       .then((dataUrl) => {
         if (alive) setPairingQr(dataUrl)
       })

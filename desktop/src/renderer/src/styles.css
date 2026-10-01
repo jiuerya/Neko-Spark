@@ -732,8 +732,8 @@ button {
 }
 
 .pairing-qr {
-  width: 180px;
-  height: 180px;
+  width: 260px;
+  height: 260px;
   flex: none;
   image-rendering: pixelated;
   border-radius: 8px;

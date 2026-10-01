@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   desktop:
-    name: Desktop typecheck, build and smoke test
+    name: Desktop typecheck, build and API contract test
     runs-on: windows-latest
     defaults:
       run:

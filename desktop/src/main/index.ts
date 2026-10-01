@@ -28,7 +28,7 @@ import {
   type SplitResult,
   type TaskProgress
 } from '@shared/types'
-import { applyRuntimePaths, resolveDataDir, writeConfiguredDataDir } from './hub/config'
+import { applyRuntimePaths, appRootDir, resolveDataDirWithSource, writeConfiguredDataDir } from './hub/config'
 import { ensureStorage, seedBundledAssets, videoThumbPath, type StoragePaths } from './hub/storage'
 import { Database } from './hub/db'
 import { startHub, type HubHandle } from './hub'
@@ -39,13 +39,30 @@ import { thumbPool } from './hub/thumb-pool'
 import { cleanupDragStaging, prepareDragFiles, startNativeDrag } from './drag'
 import { loadOrCreateHubToken, tightenHubTokenPermissions } from './hub/auth'
 import { loadOrCreateHubTls, type HubTlsCredentials } from './hub/tls'
+import { initLogger, log, logError, summarizePath } from './logger'
 
 /** 拖拽中转文件的保留时长（硬链接不占空间，但也不能无限攒） */
 const DRAG_STAGING_MAX_AGE_MS = 24 * 60 * 60 * 1000
 const MAX_VIDEO_THUMB_BYTES = 16 * 1024 * 1024
 
-const dataDir = resolveDataDir()
+const dataResolution = resolveDataDirWithSource()
+const dataDir = dataResolution.dataDir
+initLogger(dataDir)
+log('info', 'startup.data_dir_resolved', {
+  source: dataResolution.source,
+  packaged: app.isPackaged,
+  portable: Boolean(process.env.PORTABLE_EXECUTABLE_DIR),
+  installRoot: summarizePath(appRootDir()),
+  dataDir: summarizePath(dataDir)
+})
 applyRuntimePaths(dataDir)
+
+process.on('uncaughtException', (error) => {
+  logError('process.uncaught_exception', error)
+})
+process.on('unhandledRejection', (reason) => {
+  logError('process.unhandled_rejection', reason)
+})
 
 let mainWindow: BrowserWindow | null = null
 let db: Database | null = null
@@ -157,13 +174,21 @@ function bundledAssetsDir(): string {
 
 async function bootstrap(): Promise<void> {
   try {
+    log('info', 'startup.bootstrap_begin', {
+      dataDir: summarizePath(dataDir),
+      dataDirExists: existsSync(dataDir),
+      installRoot: summarizePath(appRootDir())
+    })
     paths = ensureStorage(dataDir)
     // 把当前数据仓库登记到安装目录和用户级指针；换安装目录升级时仍能找回原库。
     if (app.isPackaged) writeConfiguredDataDir(paths.dataDir)
     // 必须在建库/起 hub 之前播种：否则首屏拉 /background/:n 会 404，
     // 前端把 null 缓存下来，这一轮就看不到插画了（要重启才补上）。
     const seeded = seedBundledAssets(paths, bundledAssetsDir())
-    if (seeded > 0) console.log(`[assets] 已补齐内置素材 ${seeded} 个 → ${paths.dataDir}`)
+    if (seeded > 0) {
+      log('info', 'startup.assets_seeded', { count: seeded })
+      console.log(`[assets] 已补齐内置素材 ${seeded} 个`)
+    }
     db = new Database(paths.dbPath)
     hubToken = loadOrCreateHubToken(paths.dataDir)
     tightenHubTokenPermissions(paths.dataDir)
@@ -180,10 +205,13 @@ async function bootstrap(): Promise<void> {
       onSyncProgress: (progress) => send('sync:progress', progress),
       onPairing: () => send('pairing:completed')
     })
-    const url = hub.status.addresses[0] ?? `https://127.0.0.1:${hub.status.port}`
-    console.log(`[hub] 已启动: ${url}`)
-    console.log(`[hub] 仓库目录: ${paths.dataDir}`)
-    console.log(`[hub] 运行时目录: ${join(paths.dataDir, 'runtime')}`)
+    log('info', 'startup.hub_started', {
+      port: hub.status.port,
+      addressCount: hub.status.addresses.length,
+      dataDir: summarizePath(paths.dataDir),
+      runtimeDir: summarizePath(join(paths.dataDir, 'runtime'))
+    })
+    console.log(`[hub] 已启动，端口 ${hub.status.port}`)
 
     // 启动后补齐上次未完成的缩略图
     void processPendingThumbs(db, paths.blobsDir, paths.thumbsDir).then((count) => {
@@ -194,7 +222,11 @@ async function bootstrap(): Promise<void> {
     void cleanupDragStaging(paths.tmpDir, DRAG_STAGING_MAX_AGE_MS)
   } catch (err) {
     startupError = err instanceof Error ? err.message : String(err)
-    console.error('[hub] 启动失败:', startupError)
+    logError('startup.bootstrap_failed', err, {
+      dataDir: summarizePath(dataDir),
+      installRoot: summarizePath(appRootDir())
+    })
+    console.error('[hub] 启动失败，详细信息已写入本地诊断日志')
   }
 }
 
