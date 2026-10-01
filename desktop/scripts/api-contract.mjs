@@ -16,7 +16,7 @@ const hubPort = Number(process.env.GALLERY_MIRROR_API_TEST_PORT) || 8899
 const cdpPort = Number(process.env.GALLERY_MIRROR_API_TEST_CDP_PORT) || 9234
 const base = `https://127.0.0.1:${hubPort}/api/v1`
 const electron = join(projectRoot, 'node_modules', 'electron', 'dist', process.platform === 'win32' ? 'electron.exe' : 'electron')
-const child = spawn(electron, ['.', `--remote-debugging-port=${cdpPort}`], {
+const child = spawn(electron, ['.', `--remote-debugging-port=${cdpPort}`, `--user-data-dir=${join(dataDir, 'runtime')}`], {
   cwd: projectRoot,
   env: { ...process.env, GALLERY_MIRROR_DATA: dataDir, GALLERY_MIRROR_PORT: String(hubPort) },
   stdio: 'ignore'

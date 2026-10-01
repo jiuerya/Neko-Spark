@@ -367,6 +367,10 @@ class SyncService : Service() {
             )
         }
 
+        fun cancel(context: Context) {
+            context.startService(Intent(context, SyncService::class.java).setAction(ACTION_STOP))
+        }
+
         private fun start(context: Context, intent: Intent) {
             ContextCompat.startForegroundService(context, intent)
         }

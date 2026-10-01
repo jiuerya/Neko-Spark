@@ -10,3 +10,10 @@
     WriteRegExpandStr HKLM "${INSTALL_REGISTRY_KEY}" InstallLocation "D:\GalleryMirror"
   ${EndIf}
 !macroend
+
+; 覆盖升级前主动关闭主进程及其 Electron 子进程，避免 app.asar / native DLL 被占用。
+; taskkill 找不到进程时返回非零，但不能阻断首次安装，所以这里故意忽略返回码。
+!macro customInit
+  nsExec::ExecToLog 'taskkill.exe /F /T /IM Neko_Spark.exe'
+  nsExec::ExecToLog 'taskkill.exe /F /T /IM GalleryMirror.exe'
+!macroend

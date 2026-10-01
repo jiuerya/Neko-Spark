@@ -35,7 +35,7 @@ NSIS 升级/卸载会清空安装目录，数据放里面会被一起删除。
 
 ```
 主进程 (src/main/index.ts)
-├─ 启动 Hub（HTTPS 8787 + mDNS `_neko-spark._tcp` + UDP 发现 8788 兜底）
+├─ 启动 Hub（HTTPS 8787/8788/8789 三选一 + mDNS `_neko-spark._tcp` + UDP 发现 8788 兜底）
 ├─ 创建窗口、注册 IPC、转发 data:changed
 └─ thumb-pool（utilityProcess 子进程池）
       └─ thumb-worker.ts —— 唯一碰 sharp 的地方

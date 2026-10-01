@@ -42,19 +42,25 @@ class MainActivity : ComponentActivity() {
     private lateinit var urlInput: EditText
     private lateinit var tokenInput: EditText
     private lateinit var fingerprintInput: EditText
+    private lateinit var hostSummaryText: TextView
     private lateinit var identityText: TextView
     private lateinit var statusText: TextView
     private lateinit var progressBar: ProgressBar
     private lateinit var mascotView: ImageView
     private lateinit var logText: TextView
+    private lateinit var connectButton: Button
     private lateinit var scanButton: Button
     private lateinit var backupButton: Button
     private lateinit var restoreButton: Button
+    private lateinit var cancelButton: Button
+    private lateinit var unpairButton: Button
     private lateinit var overlaySwitch: Switch
     private var afterPermission: (() -> Unit)? = null
     // 系统设置页返回时保留用户刚才的开启意图；否则先把开关拨回去会触发监听器，永久写入 false。
     private var pendingOverlayEnable = false
     private var updatingOverlaySwitch = false
+    private var hostDiscoveryRunning = false
+    private var lastHostDiscoveryAt = 0L
 
     private val qrScannerLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -129,17 +135,9 @@ class MainActivity : ComponentActivity() {
         header.addView(titles)
         root.addView(header)
 
-        // ---------- 卡片：地址 + 按钮 ----------
-        val card = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_card)
-            setPadding(dp(14), dp(14), dp(14), dp(16))
-        }
-        card.addView(TextView(this).apply {
-            text = "电脑端服务地址"
-            textSize = 12f
-            setTextColor(colorDim)
-        })
+        // ---------- 分区一：电脑主机 / 配对 ----------
+        val hostCard = makeCard()
+        addSectionHeader(hostCard, "电脑主机", "配对后会自动保存 HTTPS 地址、证书指纹和访问密钥")
         urlInput = EditText(this).apply {
             setText(prefs.getString("hub_url", defaultHubUrl()))
             hint = "https://192.168.x.x:8787"
@@ -164,18 +162,18 @@ class MainActivity : ComponentActivity() {
                 leftMargin = dp(8)
             }
         )
-        card.addView(
+        hostCard.addView(
             urlRow,
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                 topMargin = dp(6)
             }
         )
-        card.addView(TextView(this).apply {
-            text = "推荐使用“搜索电脑”或“扫一扫配对”：地址、证书指纹和访问密钥会自动填写。下面两项仅供 USB/手动连接兼容旧版。"
-            textSize = 11f
+        hostSummaryText = TextView(this).apply {
+            textSize = 12f
             setTextColor(colorDim)
-            setPadding(0, dp(4), 0, 0)
-        })
+            setPadding(0, dp(7), 0, 0)
+        }
+        hostCard.addView(hostSummaryText)
 
         val pairRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -191,16 +189,11 @@ class MainActivity : ComponentActivity() {
         pairRow.addView(scanPairButton, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
             leftMargin = dp(8)
         })
-        card.addView(pairRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+        hostCard.addView(pairRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             topMargin = dp(8)
         })
 
-        card.addView(TextView(this).apply {
-            text = "局域网访问密钥"
-            textSize = 12f
-            setTextColor(colorDim)
-            setPadding(0, dp(12), 0, 0)
-        })
+        addFieldLabel(hostCard, "局域网访问密钥")
         tokenInput = EditText(this).apply {
             setText(prefs.getString("hub_token", ""))
             hint = "配对后自动填写；手动连接时再填写"
@@ -212,14 +205,9 @@ class MainActivity : ComponentActivity() {
             background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_input)
             setPadding(dp(12), dp(10), dp(12), dp(10))
         }
-        card.addView(tokenInput, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) })
+        hostCard.addView(tokenInput, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) })
 
-        card.addView(TextView(this).apply {
-            text = "HTTPS 证书 SHA-256 指纹"
-            textSize = 12f
-            setTextColor(colorDim)
-            setPadding(0, dp(12), 0, 0)
-        })
+        addFieldLabel(hostCard, "HTTPS 证书 SHA-256 指纹")
         fingerprintInput = EditText(this).apply {
             setText(prefs.getString("hub_fingerprint", ""))
             hint = "配对后自动填写；手动连接时填写 SHA-256"
@@ -230,14 +218,22 @@ class MainActivity : ComponentActivity() {
             background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_input)
             setPadding(dp(12), dp(10), dp(12), dp(10))
         }
-        card.addView(fingerprintInput, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) })
+        hostCard.addView(fingerprintInput, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) })
 
-        card.addView(TextView(this).apply {
-            text = "设备身份（我是哪台手机）"
-            textSize = 12f
-            setTextColor(colorDim)
-            setPadding(0, dp(12), 0, 0)
-        })
+        val hostActions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            weightSum = 2f
+        }
+        connectButton = styledButton("测试连接", primary = false).apply { setOnClickListener { testConnection() } }
+        unpairButton = styledButton("取消本机配对", primary = false).apply { setOnClickListener { clearPairing() } }
+        hostActions.addView(connectButton, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        hostActions.addView(unpairButton, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(8) })
+        hostCard.addView(hostActions, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) })
+        root.addView(hostCard, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(16) })
+
+        // ---------- 分区二：手机身份 ----------
+        val deviceCard = makeCard()
+        addSectionHeader(deviceCard, "这台手机", "用设备身份区分多台手机，重装后可认领电脑端已有记录")
         identityText = TextView(this).apply {
             textSize = 14f
             setTextColor(colorText)
@@ -245,38 +241,67 @@ class MainActivity : ComponentActivity() {
             setPadding(dp(12), dp(10), dp(12), dp(10))
             setOnClickListener { pickDeviceIdentity() }
         }
-        card.addView(
+        deviceCard.addView(
             identityText,
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) }
         )
-        card.addView(TextView(this).apply {
-            text = "点击可改名，或从电脑端已有的设备里认领一台（避免同一台手机重复建号）"
+        deviceCard.addView(TextView(this).apply {
+            text = "点击上方身份卡可改名或认领电脑端已有设备"
             textSize = 11f
             setTextColor(colorDim)
             setPadding(0, dp(4), 0, 0)
         })
+        root.addView(deviceCard, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(12) })
 
+        // ---------- 分区三：相册迁移 ----------
+        val transferCard = makeCard()
+        addSectionHeader(transferCard, "相册迁移", "先扫描确认数量，再选择备份；传输期间可留在后台")
         val buttonRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            weightSum = 3f
+            weightSum = 2f
         }
-        val connectButton = styledButton("测试连接", primary = false)
         scanButton = styledButton("扫描相册", primary = false)
         backupButton = styledButton("开始备份", primary = true)
-        for ((index, button) in listOf(connectButton, scanButton, backupButton).withIndex()) {
+        for ((index, button) in listOf(scanButton, backupButton).withIndex()) {
             buttonRow.addView(button, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                 if (index > 0) leftMargin = dp(8)
             })
         }
-        card.addView(buttonRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(12) })
+        transferCard.addView(buttonRow)
 
-        // ---------- 第二行：电脑 → 手机（迁移/恢复） ----------
         restoreButton = styledButton("从电脑恢复（迁移回手机）", primary = false)
-        card.addView(
+        transferCard.addView(
             restoreButton,
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) }
         )
+        cancelButton = styledButton("取消当前任务", primary = false).apply {
+            isEnabled = false
+            alpha = 0.5f
+            setOnClickListener { SyncService.cancel(this@MainActivity) }
+        }
+        transferCard.addView(cancelButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) })
 
+        statusText = TextView(this).apply {
+            text = "就绪"
+            textSize = 13f
+            setTextColor(colorAccent)
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(0, dp(12), 0, 0)
+        }
+        transferCard.addView(statusText)
+        progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            progress = 0
+            visibility = View.GONE
+            progressTintList = android.content.res.ColorStateList.valueOf(colorAccent)
+            progressBackgroundTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#E3F1FF"))
+        }
+        transferCard.addView(progressBar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(10)).apply { topMargin = dp(6) })
+        root.addView(transferCard, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(12) })
+
+        // ---------- 分区四：运行设置 ----------
+        val settingsCard = makeCard()
+        addSectionHeader(settingsCard, "运行设置", "后台同步会使用前台服务和通知栏显示进度")
         overlaySwitch = Switch(this).apply {
             text = "同步时显示悬浮窗进度"
             textSize = 13f
@@ -297,40 +322,18 @@ class MainActivity : ComponentActivity() {
                 log(if (checked) "已开启同步悬浮窗" else "已关闭同步悬浮窗")
             }
         }
-        card.addView(overlaySwitch, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-            topMargin = dp(6)
-        })
-        card.addView(TextView(this).apply {
+        settingsCard.addView(overlaySwitch)
+        settingsCard.addView(TextView(this).apply {
             text = "仅在备份/恢复运行期间显示；外圈从 12 点方向按顺时针表示实时进度。"
             textSize = 11f
             setTextColor(colorDim)
             setPadding(0, 0, 0, dp(2))
         })
+        root.addView(settingsCard, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(12) })
 
-        root.addView(card, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(16) })
-
-        // ---------- 状态 + 进度条 ----------
-        statusText = TextView(this).apply {
-            text = "就绪"
-            textSize = 13f
-            setTextColor(colorAccent)
-            typeface = Typeface.DEFAULT_BOLD
-        }
-        root.addView(statusText, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(14) })
-
-        progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
-            max = 100
-            progress = 0
-            visibility = View.GONE
-            progressTintList = android.content.res.ColorStateList.valueOf(colorAccent)
-            progressBackgroundTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#E3F1FF"))
-        }
-        root.addView(
-            progressBar,
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(10)).apply { topMargin = dp(6) }
-        )
-
-        // ---------- 日志卡片 ----------
+        // ---------- 分区五：活动日志 ----------
+        val logCard = makeCard()
+        addSectionHeader(logCard, "活动日志", "只显示本机操作结果，不会记录访问密钥")
         logText = TextView(this).apply {
             text = ""
             textSize = 12f
@@ -342,7 +345,8 @@ class MainActivity : ComponentActivity() {
         }
         // 页面内容比小屏高度长时交给外层 ScrollView 滚动；日志保留固定高度，避免权重在
         // ScrollView 的非约束测量下吞掉其它控件或让整页无法向下滚动。
-        root.addView(logText, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(180)).apply { topMargin = dp(8) })
+        logCard.addView(logText, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(180)).apply { topMargin = dp(8) })
+        root.addView(logCard, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(12) })
 
         val page = ScrollView(this).apply {
             isFillViewport = true
@@ -352,7 +356,6 @@ class MainActivity : ComponentActivity() {
         setContentView(page)
         observeSyncState()
 
-        connectButton.setOnClickListener { testConnection() }
         scanButton.setOnClickListener { ensurePermissionThen { scanAlbum() } }
         backupButton.setOnClickListener { startBackup() }
         restoreButton.setOnClickListener { ensurePermissionThen { startRestore() } }
@@ -365,6 +368,7 @@ class MainActivity : ComponentActivity() {
         intent?.getStringExtra("token")?.let { tokenInput.setText(it) }
         intent?.getStringExtra("fingerprint")?.let { fingerprintInput.setText(it) }
         updateIdentity()
+        updateHostSummary()
         if (intent?.getBooleanExtra("searchhubs", false) == true) {
             logText.postDelayed({ searchHubs() }, 500)
         }
@@ -407,7 +411,44 @@ class MainActivity : ComponentActivity() {
                 updatingOverlaySwitch = false
             }
         }
+        refreshPairedHostFromDiscovery()
     }
+
+    /** 已配对手机回到前台时刷新 mDNS，自动跟随电脑端换端口或网卡变化。 */
+    private fun refreshPairedHostFromDiscovery() {
+        if (!::urlInput.isInitialized || hostDiscoveryRunning) return
+        val token = prefs.getString("hub_token", "").orEmpty()
+        val fingerprint = prefs.getString("hub_fingerprint", "").orEmpty()
+        if (token.isBlank() || fingerprint.isBlank()) return
+        val now = System.currentTimeMillis()
+        if (now - lastHostDiscoveryAt < 10_000L) return
+        lastHostDiscoveryAt = now
+        hostDiscoveryRunning = true
+        lifecycleScope.launch {
+            try {
+                val found = withContext(Dispatchers.IO) { HubDiscovery.search(this@MainActivity, timeoutMs = 1800L) }
+                val expected = normalizeFingerprint(fingerprint)
+                val target = found.firstOrNull { normalizeFingerprint(it.fingerprint) == expected }
+                if (target != null && target.url != urlInput.text.toString().trim()) {
+                    urlInput.setText(target.url)
+                    fingerprintInput.setText(target.fingerprint)
+                    prefs.edit()
+                        .putString("hub_url", target.url)
+                        .putString("hub_fingerprint", target.fingerprint)
+                        .apply()
+                    updateHostSummary("已通过局域网发现更新电脑地址：${target.url}")
+                    log("电脑端地址已自动更新：${target.url}")
+                }
+            } catch (e: Exception) {
+                log("更新电脑地址失败：${e.message}")
+            } finally {
+                hostDiscoveryRunning = false
+            }
+        }
+    }
+
+    private fun normalizeFingerprint(value: String): String =
+        value.filter { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' }.uppercase()
 
     /** 搜索局域网里的电脑端 Hub（一个局域网可能有多台） */
     private fun searchHubs() {
@@ -429,6 +470,7 @@ class MainActivity : ComponentActivity() {
                         fingerprintInput.setText(target.fingerprint)
                         saveUrl()
                         saveFingerprint()
+                        updateHostSummary("已发现电脑：${target.url}")
                         log("已选择电脑：${target.name}  ${target.url}")
                         promptPairingCode(target.url, target.fingerprint)
                     }
@@ -491,6 +533,36 @@ class MainActivity : ComponentActivity() {
                     .show()
             }
         }
+    }
+
+    private fun makeCard(): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_card)
+        setPadding(dp(14), dp(14), dp(14), dp(16))
+    }
+
+    private fun addSectionHeader(parent: LinearLayout, title: String, subtitle: String) {
+        parent.addView(TextView(this).apply {
+            text = title
+            textSize = 17f
+            setTextColor(colorText)
+            typeface = Typeface.DEFAULT_BOLD
+        })
+        parent.addView(TextView(this).apply {
+            text = subtitle
+            textSize = 11f
+            setTextColor(colorDim)
+            setPadding(0, dp(3), 0, dp(8))
+        })
+    }
+
+    private fun addFieldLabel(parent: LinearLayout, textValue: String) {
+        parent.addView(TextView(this).apply {
+            text = textValue
+            textSize = 12f
+            setTextColor(colorDim)
+            setPadding(0, dp(12), 0, 0)
+        })
     }
 
     private fun promptRename() {
@@ -564,16 +636,17 @@ class MainActivity : ComponentActivity() {
 
     private fun handlePairIntent(intent: Intent?) {
         val data = intent?.data ?: return
-        if (data.scheme != "neko-spark" || data.host != "pair") return
-        val url = data.getQueryParameter("url").orEmpty()
-        val fingerprint = data.getQueryParameter("fingerprint").orEmpty()
-        val code = data.getQueryParameter("code").orEmpty()
+        if (!data.scheme.equals("neko-spark", ignoreCase = true) || !data.host.equals("pair", ignoreCase = true)) return
+        val url = data.getQueryParameter("url").orEmpty().trim().trimEnd('/')
+        val fingerprint = data.getQueryParameter("fingerprint").orEmpty().trim()
+        val code = data.getQueryParameter("code").orEmpty().trim()
         if (url.isBlank() || fingerprint.isBlank() || !code.matches(Regex("\\d{6}"))) {
             log("二维码内容不完整，未开始配对")
             return
         }
         urlInput.setText(url)
         fingerprintInput.setText(fingerprint)
+        updateHostSummary("已读取二维码，正在连接电脑：$url")
         pairHub(url, fingerprint, code)
     }
 
@@ -613,14 +686,28 @@ class MainActivity : ComponentActivity() {
                 val result = withContext(Dispatchers.IO) {
                     HubClient(url, "", fingerprint).pair(code, runner.deviceId(), runner.deviceName())
                 }
-                urlInput.setText(url)
-                fingerprintInput.setText(fingerprint)
+                // 配对成功后重新发现 Hub，修正端口被占用切换、网卡变化或二维码生成时的旧地址。
+                val discovered = withContext(Dispatchers.IO) {
+                    HubDiscovery.search(this@MainActivity)
+                }
+                val expectedFingerprint = normalizeFingerprint(fingerprint)
+                val currentHub = discovered.firstOrNull { it.fingerprint.equals(expectedFingerprint, ignoreCase = true) }
+                val effectiveUrl = currentHub?.url ?: url
+                val effectiveFingerprint = currentHub?.fingerprint ?: fingerprint
+                if (currentHub != null && currentHub.url != url) {
+                    log("已通过局域网发现更新电脑地址：${currentHub.url}")
+                } else if (currentHub == null) {
+                    log("配对成功，但暂未发现电脑的 mDNS 广播，保留二维码地址")
+                }
+                urlInput.setText(effectiveUrl)
+                fingerprintInput.setText(effectiveFingerprint)
                 tokenInput.setText(result.token)
                 prefs.edit()
-                    .putString("hub_url", url)
-                    .putString("hub_fingerprint", fingerprint)
+                    .putString("hub_url", effectiveUrl)
+                    .putString("hub_fingerprint", effectiveFingerprint)
                     .putString("hub_token", result.token)
                     .apply()
+                updateHostSummary("配对成功，正在验证电脑连接：$effectiveUrl")
                 statusText.text = "配对成功"
                 log("已与电脑端配对，访问密钥已安全保存到应用私有配置")
                 Toast.makeText(this@MainActivity, "配对成功，连接信息已自动保存", Toast.LENGTH_LONG).show()
@@ -645,19 +732,58 @@ class MainActivity : ComponentActivity() {
         return fingerprint
     }
 
+    private fun updateHostSummary(message: String? = null) {
+        if (!::hostSummaryText.isInitialized) return
+        val url = prefs.getString("hub_url", "").orEmpty()
+        val fingerprint = prefs.getString("hub_fingerprint", "").orEmpty()
+        hostSummaryText.text = when {
+            message != null -> message
+            url.isBlank() || fingerprint.isBlank() -> "尚未配对：搜索电脑或扫一扫配对"
+            else -> "已保存主机：$url\n证书指纹已保存，访问密钥已安全存储"
+        }
+    }
+
+    private fun clearPairing() {
+        if (running) {
+            log("任务进行中，完成或取消任务后再取消配对")
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("取消本机配对？")
+            .setMessage("只清除这台手机保存的主机地址、证书指纹和访问密钥，电脑端相册与设备记录不会被删除。")
+            .setPositiveButton("取消配对") { _, _ ->
+                prefs.edit()
+                    .remove("hub_url")
+                    .remove("hub_token")
+                    .remove("hub_fingerprint")
+                    .apply()
+                urlInput.setText(defaultHubUrl())
+                tokenInput.setText("")
+                fingerprintInput.setText("")
+                statusText.text = "尚未配对"
+                updateHostSummary()
+                log("已取消本机配对，电脑端相册未受影响")
+            }
+            .setNegativeButton("保留", null)
+            .show()
+    }
+
     private fun testConnection() {
         val url = saveUrl()
         val token = saveToken()
         val fingerprint = saveFingerprint()
         statusText.text = "测试连接中..."
+        updateHostSummary("正在连接电脑：$url")
         lifecycleScope.launch {
             try {
                 val result = withContext(Dispatchers.IO) { HubClient(url, token, fingerprint).health() }
                 statusText.text = "连接成功"
+                updateHostSummary("电脑已连接：$url")
                 log("连接成功：$result")
                 loadMascotFromHub(url, token, fingerprint)
             } catch (e: Exception) {
                 statusText.text = "连接失败"
+                updateHostSummary("电脑暂时不可达：$url")
                 log("连接失败：${e.message}")
             }
         }
@@ -745,6 +871,8 @@ class MainActivity : ComponentActivity() {
 
     private fun renderSyncState(state: SyncState) {
         setButtonsEnabled(!state.running)
+        cancelButton.isEnabled = state.running
+        cancelButton.alpha = if (state.running) 1f else 0.5f
         if (state.running) {
             progressBar.visibility = View.VISIBLE
             progressBar.max = 100

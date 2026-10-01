@@ -40,6 +40,7 @@ const appName = 'Neko_Spark.exe'
  */
 const LEGACY_APP_NAMES = ['GalleryMirror.exe']
 const hubPort = Number(process.env.GM_DEPLOY_PORT || 8787)
+const hubPorts = [hubPort, hubPort + 1, hubPort + 2]
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -121,20 +122,27 @@ console.log('· 启动程序…')
 spawn('cmd', ['/c', 'start', '', join(targetDir, appName)], { detached: true, stdio: 'ignore' }).unref()
 
 // ---------- 4) 验证：Hub 起来 + 数据还在 ----------
-const base = `https://127.0.0.1:${hubPort}/api/v1`
+const bases = hubPorts.map((port) => `https://127.0.0.1:${port}/api/v1`)
 let info = null
+let activeBase = ''
 for (let i = 0; i < 60 && !info; i += 1) {
   await sleep(1000)
-  try {
-    const res = await fetch(`${base}/info`, { signal: AbortSignal.timeout(3000) })
-    if (res.ok) info = await res.json()
-  } catch {
-    /* 还没起来 */
+  for (const base of bases) {
+    try {
+      const res = await fetch(`${base}/info`, { signal: AbortSignal.timeout(1000) })
+      if (res.ok) {
+        info = await res.json()
+        activeBase = base
+        break
+      }
+    } catch {
+      /* 还没起来，或候选端口尚未可用 */
+    }
   }
 }
 if (!info) fail('程序启动了但 Hub 没起来，请检查')
 
-console.log(`✓ 部署完成，服务已就绪（${base}）`)
+console.log(`✓ 部署完成，服务已就绪（${activeBase}）`)
 console.log('  数据目录: 请在桌面端设置页查看（Hub 不通过 HTTP 泄露本机路径）')
 console.log(
   `  媒体 ${info.counts.media} 项 · 回收站 ${info.counts.trash} 项 · 设备 ${info.counts.devices} 个 · 内容 ${info.counts.blobs} 个`

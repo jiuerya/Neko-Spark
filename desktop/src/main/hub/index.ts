@@ -1,11 +1,12 @@
 import { createReadStream, existsSync } from 'node:fs'
 import { createSocket, type Socket as UdpSocket } from 'node:dgram'
+import { execFileSync } from 'node:child_process'
 import { mkdir, open, readdir, rename, rm, stat } from 'node:fs/promises'
 import { createServer, type Server } from 'node:https'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { networkInterfaces } from 'node:os'
 import { dirname, join } from 'node:path'
-import { randomInt } from 'node:crypto'
+import { createHash, randomInt } from 'node:crypto'
 import { pipeline } from 'node:stream/promises'
 import {
   APP_NAME,
@@ -37,9 +38,10 @@ import { purgeTrash, restoreMedia, sweepExpiredTrash, trashMedia } from './trash
 import { HUB_TOKEN_HEADER, isLoopbackAddress, tokenMatches } from './auth'
 import type { HubTlsCredentials } from './tls'
 import { startMdns } from './mdns'
+import { log, logError } from '../logger'
 
 const DEFAULT_PORT = 8787
-const MAX_PORT_TRIES = 20
+const PORT_CANDIDATE_COUNT = 3
 const MAX_JSON_BODY = 64 * 1024 * 1024
 const MAX_TEXT_FIELD = 4096
 const MAX_DEVICE_ID = 256
@@ -86,6 +88,12 @@ function newPairingState(): PairingState {
     attempts: 0,
     used: false
   }
+}
+
+function identifierFingerprint(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0
+    ? createHash('sha256').update(value).digest('hex').slice(0, 12)
+    : undefined
 }
 
 function sendJson(res: ServerResponse, statusCode: number, body: unknown): void {
@@ -144,14 +152,43 @@ function listen(server: Server, port: number): Promise<number> {
 }
 
 async function listenWithFallback(server: Server, preferred: number): Promise<number> {
-  for (let i = 0; i < MAX_PORT_TRIES; i += 1) {
+  const candidates = Array.from({ length: PORT_CANDIDATE_COUNT }, (_, index) => preferred + index)
+  for (const port of candidates) {
+    // Windows 允许 0.0.0.0 与某个具体网卡地址同时监听同一端口，
+    // 这会让手机访问局域网地址时命中别的进程。启动前先检查 LISTENING，避免二维码广播一个实际上不可达的端口。
+    if (process.platform === 'win32' && hasTcpListener(port)) {
+      log('warn', 'hub.port_occupied', { port })
+      continue
+    }
     try {
-      return await listen(server, preferred + i)
+      return await listen(server, port)
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw err
+      log('warn', 'hub.port_bind_conflict', { port })
     }
   }
-  throw new Error(`端口 ${preferred}-${preferred + MAX_PORT_TRIES - 1} 全部被占用`)
+  throw new Error(`端口 ${candidates.join('、')} 全部被占用`)
+}
+
+function hasTcpListener(port: number): boolean {
+  try {
+    const output = execFileSync('netstat.exe', ['-ano', '-p', 'tcp'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+      timeout: 1000
+    })
+    return output.split(/\r?\n/).some((line) => {
+      const columns = line.trim().split(/\s+/)
+      if (columns.length < 4 || columns[0].toUpperCase() !== 'TCP') return false
+      if (columns[3].toUpperCase() !== 'LISTENING') return false
+      const localEndpoint = columns[1]
+      return localEndpoint.endsWith(`:${port}`) || localEndpoint.endsWith(`]:${port}`)
+    })
+  } catch {
+    // netstat 不可用时仍让内核尝试绑定；EADDRINUSE 仍会走下面的候选端口。
+    return false
+  }
 }
 
 function readJsonBody<T>(req: IncomingMessage): Promise<T> {
@@ -543,6 +580,7 @@ export async function startHub(options: HubOptions): Promise<HubHandle> {
 
     void handleRoute().catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err)
+      logError('hub.request_failed', err, { method, path: url.pathname })
       console.error('[hub] 请求失败:', message)
       if (!res.headersSent) {
         const status = message === 'request_too_large' || message === '请求体过大' ? 413 : message === 'invalid_json' ? 400 : 500
@@ -556,16 +594,24 @@ export async function startHub(options: HubOptions): Promise<HubHandle> {
     async function handleRoute(): Promise<void> {
       // POST /api/v1/pair —— 手机首次配对，配对码只允许成功一次
       if (isPairingRequest) {
+        log('info', 'hub.pair_request_received', {
+          attempts: pairing.attempts,
+          hasOrigin: Boolean(origin),
+          remoteAddressPresent: Boolean(req.socket.remoteAddress)
+        })
         if (pairing.used || pairing.expiresAt <= Date.now()) {
+          log('info', 'hub.pair_result', { status: 410, reason: 'expired' })
           sendJson(res, 410, { error: 'pairing_code_expired' })
           return
         }
         if (pairing.attempts >= PAIRING_CODE_MAX_ATTEMPTS) {
+          log('info', 'hub.pair_result', { status: 429, reason: 'locked' })
           sendJson(res, 429, { error: 'pairing_code_locked' })
           return
         }
         const body = await readJsonBody<{ code?: unknown; device?: unknown }>(req)
         if (!hasSupportedProtocol(body)) {
+          log('info', 'hub.pair_result', { status: 426, reason: 'unsupported_protocol' })
           sendUnsupportedProtocol(res)
           return
         }
@@ -573,12 +619,19 @@ export async function startHub(options: HubOptions): Promise<HubHandle> {
         // 后续 manifest/commit 会补登记。带了设备字段却不合法时不能静默丢弃，
         // 否则手机会显示“配对成功”，电脑端却永远没有对应设备。
         if (body?.device !== undefined && !isValidDevice(body.device)) {
+          log('info', 'hub.pair_result', { status: 400, reason: 'invalid_device' })
           sendJson(res, 400, { error: 'invalid_device' })
           return
         }
         const code = typeof body?.code === 'string' ? body.code.trim() : ''
         pairing.attempts += 1
         if (!/^\d{6}$/.test(code) || code !== pairing.code) {
+          log('info', 'hub.pair_result', {
+            status: 401,
+            reason: 'invalid_pairing_code',
+            codeFormatValid: /^\d{6}$/.test(code),
+            deviceIdHash: identifierFingerprint((body?.device as { deviceId?: unknown } | undefined)?.deviceId)
+          })
           sendJson(res, 401, { error: 'invalid_pairing_code' })
           return
         }
@@ -601,6 +654,12 @@ export async function startHub(options: HubOptions): Promise<HubHandle> {
         }
         options.onDataChanged?.()
         options.onPairing?.()
+        log('info', 'hub.pair_result', {
+          status: 200,
+          reason: 'success',
+          deviceRegistered: Boolean(device),
+          deviceIdHash: identifierFingerprint(device?.deviceId)
+        })
         sendJson(res, 200, { ok: true, token: options.authToken, deviceRegistered: Boolean(device) })
         return
       }
