@@ -732,8 +732,8 @@ button {
 }
 
 .pairing-qr {
-  width: 260px;
-  height: 260px;
+  width: 340px;
+  height: 340px;
   flex: none;
   image-rendering: pixelated;
   border-radius: 8px;
@@ -810,8 +810,8 @@ button {
 
 .pairing-popup-qr,
 .pairing-popup-qr-empty {
-  width: 260px;
-  height: 260px;
+  width: 340px;
+  height: 340px;
   border-radius: 10px;
   background: #ffffff;
 }

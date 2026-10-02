@@ -32,6 +32,11 @@ const api: GmApi = {
     ipcRenderer.on('sync:progress', listener)
     return () => ipcRenderer.removeListener('sync:progress', listener)
   },
+  onPairingRequested: (callback: () => void) => {
+    const listener = (): void => callback()
+    ipcRenderer.on('pairing:requested', listener)
+    return () => ipcRenderer.removeListener('pairing:requested', listener)
+  },
   onPairing: (callback: () => void) => {
     const listener = (): void => callback()
     ipcRenderer.on('pairing:completed', listener)

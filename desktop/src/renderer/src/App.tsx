@@ -45,6 +45,7 @@ const VIEW_META: Record<ViewKey, { title: string; subtitle: string }> = {
 export default function App(): JSX.Element {
   const [status, setStatus] = useState<AppStatus | null>(null)
   const [pairingPopupStatus, setPairingPopupStatus] = useState<AppStatus | null>(null)
+  const [pairingPopupPending, setPairingPopupPending] = useState(false)
   const [active, setActive] = useState<ViewKey>('timeline')
   const [media, setMedia] = useState<MediaRecord[]>([])
   const [devices, setDevices] = useState<DeviceRecord[]>([])
@@ -217,10 +218,18 @@ export default function App(): JSX.Element {
         }, 8000)
       }
     })
+    const offPairingRequested = window.gm.onPairingRequested(() => {
+      void window.gm.getStatus().then((next) => {
+        setStatus(next)
+        setPairingPopupPending(true)
+        setPairingPopupStatus(next)
+      })
+    })
     const offPairing = window.gm.onPairing(() => {
       // token 只通过本地 IPC 取回，用于桌面端提示框；Hub HTTP 和 mDNS 不会返回它。
       void window.gm.getStatus().then((next) => {
         setStatus(next)
+        setPairingPopupPending(false)
         setPairingPopupStatus(next)
         // 配对接口会先登记轻量设备记录；主动补刷一次，避免 data:changed 在页面初始加载期间丢失。
         if (next.hub.running) scheduleRefresh(apiBase(next.hub.port))
@@ -230,6 +239,7 @@ export default function App(): JSX.Element {
       offData()
       offProgress()
       offSync()
+      offPairingRequested()
       offPairing()
       if (refreshTimer.current !== null) {
         window.clearTimeout(refreshTimer.current)
@@ -728,7 +738,14 @@ export default function App(): JSX.Element {
   return (
     <div className="app">
       {pairingPopupStatus ? (
-        <PairingPopup status={pairingPopupStatus} onClose={() => setPairingPopupStatus(null)} />
+        <PairingPopup
+          status={pairingPopupStatus}
+          pending={pairingPopupPending}
+          onClose={() => {
+            setPairingPopupStatus(null)
+            setPairingPopupPending(false)
+          }}
+        />
       ) : null}
       <Sidebar
         active={active}

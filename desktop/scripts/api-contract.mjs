@@ -4,6 +4,7 @@
  * 不导入真实媒体，也不运行完整 UI smoke。
  */
 import { spawn, spawnSync } from 'node:child_process'
+import { createSocket } from 'node:dgram'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -23,6 +24,7 @@ const child = spawn(electron, ['.', `--remote-debugging-port=${cdpPort}`, `--use
 })
 
 let socket
+let discoverySocket
 let passed = true
 
 function check(name, ok, detail = '') {
@@ -112,6 +114,18 @@ try {
       }))
     })
 
+  discoverySocket = createSocket('udp4')
+  await new Promise((resolvePromise, reject) => {
+    discoverySocket.send(Buffer.from('GALLERY_MIRROR_DISCOVER'), 8788, '127.0.0.1', (error) => {
+      if (error) reject(error)
+      else resolvePromise()
+    })
+  })
+  const pendingPairingVisible = await waitFor(async () =>
+    await evaluate('document.body.innerText.includes("等待手机输入配对码")')
+  )
+  check('局域网发现时桌面端显示待配对提示', pendingPairingVisible === true)
+
   const status = JSON.parse(await evaluate('window.gm.getStatus().then((value) => JSON.stringify(value))'))
   const device = { deviceId: 'api-contract-device', name: '接口测试设备', model: 'ContractTest' }
   const wrongVersion = await request('/pair', {
@@ -190,6 +204,7 @@ try {
   console.error(`[FAIL] focused API test: ${error instanceof Error ? error.message : String(error)}`)
 } finally {
   socket?.close()
+  discoverySocket?.close()
   killTree(child.pid)
   await removeScratchDir(dataDir)
 }

@@ -10,7 +10,9 @@ import android.graphics.ImageFormat
 import android.hardware.Camera
 import android.net.Uri
 import android.os.Bundle
+import android.util.Log
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.widget.FrameLayout
@@ -39,6 +41,7 @@ import kotlin.math.roundToInt
 class QrScannerActivity : Activity(), SurfaceHolder.Callback, Camera.PreviewCallback {
 
     private lateinit var surface: PreviewSurfaceView
+    private lateinit var instruction: TextView
     private var camera: Camera? = null
     private var previewSize: Camera.Size? = null
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
@@ -56,18 +59,26 @@ class QrScannerActivity : Activity(), SurfaceHolder.Callback, Camera.PreviewCall
         val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         surface = PreviewSurfaceView(this)
         root.addView(surface, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
-        root.addView(
-            TextView(this).apply {
-                text = "将电脑端二维码放入取景框\n扫描结果只用于局域网配对"
+        instruction = TextView(this).apply {
+                text = "正在启动相机…"
                 setTextColor(Color.WHITE)
                 textSize = 16f
                 gravity = Gravity.CENTER
                 setShadowLayer(4f, 0f, 2f, Color.BLACK)
                 setPadding(24, 32, 24, 32)
-            },
+        }
+        root.addView(
+            instruction,
             FrameLayout.LayoutParams(-1, -2, Gravity.TOP)
         )
         setContentView(root)
+        // 旧 Camera API 在部分 ROM 上只有设置 PUSH_BUFFERS 后才会把预览帧送到 SurfaceView。
+        @Suppress("DEPRECATION")
+        surface.holder.setType(SurfaceHolder.SURFACE_TYPE_PUSH_BUFFERS)
+        surface.setOnTouchListener { _, event ->
+            if (event.action == MotionEvent.ACTION_UP) focusForScan()
+            true
+        }
         surface.holder.addCallback(this)
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.CAMERA), REQUEST_CAMERA)
@@ -134,17 +145,22 @@ class QrScannerActivity : Activity(), SurfaceHolder.Callback, Camera.PreviewCall
                 // 拉伸后肉眼看着变形、取景框和实际解码区域不一致。
                 val rotated = displayOrientation() % 180 != 0
                 surface.setPreviewAspect(if (rotated) size.height else size.width, if (rotated) size.width else size.height)
+                // 固定 Surface buffer 尺寸，避免部分厂商把回调尺寸和显示 Surface 解耦后输出黑帧。
+                holder.setFixedSize(size.width, size.height)
                 // NV21 4:2:0 需要约 1.5 倍宽高的回调缓冲区；准备两个，避免部分 ROM 复用首帧时崩溃。
                 val bufferSize = size.width * size.height * 3 / 2 + 1
                 repeat(2) { opened.addCallbackBuffer(ByteArray(bufferSize)) }
                 opened.setPreviewCallbackWithBuffer(this)
             }
             opened.startPreview()
+            instruction.text = "将电脑端二维码放入取景框\n保持稳定；无法识别时点按二维码对焦"
             if (focusMode == Camera.Parameters.FOCUS_MODE_AUTO) {
                 // AUTO 模式不会自行触发对焦；部分旧设备没有连续对焦模式，必须主动对焦一次。
                 runCatching { opened.autoFocus { _, _ -> } }
             }
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            Log.e(TAG, "启动相机预览失败", error)
+            runOnUiThread { instruction.text = "相机预览启动失败，请返回后重试\n${error.message.orEmpty()}" }
             releaseCamera()
             setResult(RESULT_CANCELED)
             finish()
@@ -184,6 +200,27 @@ class QrScannerActivity : Activity(), SurfaceHolder.Callback, Camera.PreviewCall
     private fun requeue(source: Camera?, frame: ByteArray) {
         if (finished || shuttingDown) return
         runCatching { source?.addCallbackBuffer(frame) }
+    }
+
+    /** 部分旧版/国产 Camera HAL 的连续对焦不会在屏幕取景后重新触发，点按时强制对焦一次。 */
+    private fun focusForScan() {
+        val opened = camera ?: return
+        runCatching {
+            val params = opened.parameters
+            if (params.supportedFocusModes?.contains(Camera.Parameters.FOCUS_MODE_AUTO) == true) {
+                params.focusMode = Camera.Parameters.FOCUS_MODE_AUTO
+                opened.parameters = params
+                opened.autoFocus { _, _ ->
+                    runCatching {
+                        val next = opened.parameters
+                        if (next.supportedFocusModes?.contains(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE) == true) {
+                            next.focusMode = Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE
+                            opened.parameters = next
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private fun decode(bytes: ByteArray, width: Int, height: Int): String? {
@@ -290,5 +327,6 @@ class QrScannerActivity : Activity(), SurfaceHolder.Callback, Camera.PreviewCall
 
     companion object {
         const val REQUEST_CAMERA = 1007
+        private const val TAG = "NekoSparkQrScanner"
     }
 }

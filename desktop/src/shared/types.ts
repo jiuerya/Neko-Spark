@@ -268,6 +268,7 @@ export interface GmApi {
   markVideoThumbFailed(mediaId: number): Promise<void>
   onProgress(callback: (progress: TaskProgress) => void): () => void
   onSyncProgress(callback: (progress: SyncProgress) => void): () => void
+  onPairingRequested(callback: () => void): () => void
   onPairing(callback: () => void): () => void
   onDataChanged(callback: () => void): () => void
 }

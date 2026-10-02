@@ -66,6 +66,8 @@ export interface HubOptions {
   onSyncProgress?: (progress: SyncProgress) => void
   /** 手机通过一次性配对码完成首次配对；只通知本地 renderer，不携带 token。 */
   onPairing?: () => void
+  /** 手机通过局域网发现开始寻找主机；通知本地 renderer 显示待输入配对码。 */
+  onPairingRequested?: () => void
 }
 
 export interface HubHandle {
@@ -400,7 +402,7 @@ function mediaItemToInput(deviceId: string, item: MediaItem, actualBlobSize = it
 }
 
 /** 启动局域网发现应答（手机端"搜索电脑"用的） */
-function startDiscovery(version: string, getPort: () => number, fingerprint: string): () => void {
+function startDiscovery(version: string, getPort: () => number, fingerprint: string, onRequest?: () => void): () => void {
   let socket: UdpSocket | null = null
   try {
     socket = createSocket({ type: 'udp4', reuseAddr: true })
@@ -414,6 +416,7 @@ function startDiscovery(version: string, getPort: () => number, fingerprint: str
     })
     socket.on('message', (message, remote) => {
       if (message.toString().trim() !== DISCOVERY_REQUEST) return
+      onRequest?.()
       const payload = JSON.stringify({
         name: APP_NAME,
         version,
@@ -481,6 +484,8 @@ export async function startHub(options: HubOptions): Promise<HubHandle> {
   const startedAt = Date.now()
   const { db, paths } = options
   let pairing = newPairingState()
+  let lastPairSuccessAt = 0
+  let lastPairingNoticeAt = 0
   const activeUploads = new Map<string, { received: number }>()
 
   // 本次清单的元数据暂存：blob 一落盘就立刻入库，照片边传边出现（不用等整轮同步结束）
@@ -653,6 +658,7 @@ export async function startHub(options: HubOptions): Promise<HubHandle> {
           })
         }
         options.onDataChanged?.()
+        lastPairSuccessAt = Date.now()
         options.onPairing?.()
         log('info', 'hub.pair_result', {
           status: 200,
@@ -1535,7 +1541,13 @@ export async function startHub(options: HubOptions): Promise<HubHandle> {
     pairingCode: pairing.code,
     pairingExpiresAt: pairing.expiresAt
   }
-  const stopDiscovery = startDiscovery(options.version, () => status.port, options.tls.fingerprint)
+  const stopDiscovery = startDiscovery(options.version, () => status.port, options.tls.fingerprint, () => {
+    const now = Date.now()
+    // 手机配对成功后会立即再次搜索 mDNS；不要让这次刷新把“已完成”弹窗覆盖回“等待输入”。
+    if (now - lastPairSuccessAt < 5000 || now - lastPairingNoticeAt < 10000) return
+    lastPairingNoticeAt = now
+    options.onPairingRequested?.()
+  })
   const stopMdns = startMdns({
     port,
     version: options.version,

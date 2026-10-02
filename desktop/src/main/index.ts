@@ -203,6 +203,7 @@ async function bootstrap(): Promise<void> {
       onDataChanged: () => send('data:changed'),
       onTaskProgress: (progress) => send('task:progress', progress),
       onSyncProgress: (progress) => send('sync:progress', progress),
+      onPairingRequested: () => send('pairing:requested'),
       onPairing: () => send('pairing:completed')
     })
     log('info', 'startup.hub_started', {
